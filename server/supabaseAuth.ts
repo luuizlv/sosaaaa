@@ -1,366 +1,210 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Express, RequestHandler } from "express";
 import { storage } from "./storage";
-import fs from 'fs';
-import path from 'path';
-import crypto from 'crypto';
 
-// Make Supabase optional for local development without authentication
-let supabase: any = null;
-
-if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
-  supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_ANON_KEY
-  );
-} else {
-  console.log("Supabase not configured - running in local mode without authentication");
+// Initialize Supabase client
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
+  throw new Error("SUPABASE_URL and SUPABASE_ANON_KEY environment variables are required");
 }
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
 export { supabase };
 
-// Local storage for users with authentication
-const USERS_DIR = path.join(process.cwd(), 'local-storage');
-const USERS_FILE = path.join(USERS_DIR, 'users.json');
+// Middleware to validate JWT tokens from Supabase
+export const isAuthenticated: RequestHandler = async (req: any, res, next) => {
+  const authorization = req.headers.authorization;
+  
+  if (!authorization || !authorization.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Token de acesso necessário' });
+  }
 
-// Ensure storage directory exists
-if (!fs.existsSync(USERS_DIR)) {
-  fs.mkdirSync(USERS_DIR, { recursive: true });
-}
-
-interface LocalUser {
-  id: string;
-  username: string;
-  email: string;
-  passwordHash: string;
-  createdAt: string;
-}
-
-function hashPassword(password: string): string {
-  return crypto.createHash('sha256').update(password + 'salt-key-2025').digest('hex');
-}
-
-function loadLocalUsers(): LocalUser[] {
+  const token = authorization.split(' ')[1];
+  
   try {
-    if (fs.existsSync(USERS_FILE)) {
-      const data = fs.readFileSync(USERS_FILE, 'utf8');
-      return JSON.parse(data);
-    }
-  } catch (error) {
-    console.error('Error loading users:', error);
-  }
-  return [];
-}
-
-function saveLocalUsers(users: LocalUser[]): void {
-  try {
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-  } catch (error) {
-    console.error('Error saving users:', error);
-  }
-}
-
-function findUserByUsername(username: string): LocalUser | undefined {
-  const users = loadLocalUsers();
-  return users.find(user => user.username === username);
-}
-
-function createLocalUser(username: string, password: string): LocalUser {
-  const users = loadLocalUsers();
-  
-  // Check if user already exists
-  if (users.find(user => user.username === username)) {
-    throw new Error('Usuário já existe');
-  }
-  
-  const newUser: LocalUser = {
-    id: `user-${username}`,
-    username,
-    email: `${username}@local.com`,
-    passwordHash: hashPassword(password),
-    createdAt: new Date().toISOString()
-  };
-  
-  users.push(newUser);
-  saveLocalUsers(users);
-  return newUser;
-}
-
-function verifyUserPassword(username: string, password: string): LocalUser | null {
-  const user = findUserByUsername(username);
-  if (!user) {
-    return null;
-  }
-  
-  const hashedPassword = hashPassword(password);
-  if (user.passwordHash === hashedPassword) {
-    return user;
-  }
-  
-  return null;
-}
-
-// Clear all local users on startup
-function clearAllLocalUsers(): void {
-  try {
-    if (fs.existsSync(USERS_FILE)) {
-      fs.unlinkSync(USERS_FILE);
-      console.log('All local users cleared');
-    }
-  } catch (error) {
-    console.error('Error clearing users:', error);
-  }
-}
-
-// Clear users when server starts - COMMENTED OUT TO FIX LOGIN ISSUES
-// clearAllLocalUsers();
-
-// Middleware to verify JWT token from Supabase or simple token
-export const isAuthenticated: RequestHandler = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: "No authorization token provided" });
-  }
-
-  const token = authHeader.split(' ')[1];
-
-  try {
-    // All users now use Supabase authentication
     const { data: { user }, error } = await supabase.auth.getUser(token);
     
     if (error || !user) {
-      return res.status(401).json({ message: "Invalid or expired token" });
-    }
-
-    // Try to ensure user exists in our database (skip if database is not available)
-    try {
-      await storage.upsertUser({
-        id: user.id,
-        email: user.email!,
-        firstName: user.user_metadata?.username || user.email!.split('@')[0],
-        lastName: null,
-        profileImageUrl: user.user_metadata?.avatar_url || null,
-      });
-    } catch (dbError: any) {
-      console.warn("Database unavailable, continuing without persisting user:", dbError.message);
+      return res.status(401).json({ error: 'Token inválido' });
     }
 
     // Add user to request object
-    (req as any).user = user;
+    req.user = user;
     next();
   } catch (error) {
-    console.error("Auth error:", error);
-    return res.status(401).json({ message: "Authentication failed" });
+    console.error('Authentication error:', error);
+    return res.status(401).json({ error: 'Erro de autenticação' });
   }
 };
 
-export function setupAuth(app: Express) {
-  // Auth routes
-  app.post('/api/auth/signup', async (req, res) => {
+export function setupSupabaseAuth(app: Express) {
+  // Login endpoint
+  app.post("/api/auth/login", async (req, res) => {
     try {
-      const { email, password, username } = req.body;
+      const { email, password } = req.body;
 
-      // If email is provided, use Supabase
-      if (email && email.includes('@')) {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              username,
-            }
-          }
-        });
-
-        if (error) {
-          return res.status(400).json({ message: error.message });
-        }
-
-        // If email confirmation is disabled, data.session will be available
-        if (data.session) {
-          res.json({
-            user: data.user,
-            session: data.session,
-            access_token: data.session.access_token,
-            message: "Account created and logged in successfully"
-          });
-        } else {
-          res.json({
-            user: data.user,
-            session: null,
-            access_token: null,
-            message: "Conta criada! Para desabilitar a confirmação por email, vá em Supabase Dashboard → Authentication → Settings → Enable email confirmations = OFF"
-          });
-        }
-      } else {
-        // Username-only signup - use Supabase with username as email
-        if (!username || username.length < 3) {
-          return res.status(400).json({ message: "Username deve ter pelo menos 3 caracteres" });
-        }
-
-        if (username.includes(' ')) {
-          return res.status(400).json({ message: "Username não pode conter espaços" });
-        }
-
-        if (!/^[a-zA-Z0-9_]+$/.test(username)) {
-          return res.status(400).json({ message: "Username pode conter apenas letras, números e underscore (_)" });
-        }
-
-        if (!password || password.length < 6) {
-          return res.status(400).json({ message: "Senha deve ter pelo menos 6 caracteres" });
-        }
-
-        try {
-          // Create user in Supabase using username as email
-          const email = `${username}@sosa-local.app`;
-          const { data, error } = await supabase.auth.signUp({
-            email,
-            password,
-            options: {
-              data: {
-                username,
-                display_name: username
-              }
-            }
-          });
-
-          if (error) {
-            if (error.message.includes('already registered')) {
-              return res.status(400).json({ message: "Este username já está sendo usado" });
-            }
-            return res.status(400).json({ message: error.message });
-          }
-
-          // If email confirmation is disabled, data.session will be available
-          if (data.session) {
-            res.json({
-              user: data.user,
-              session: data.session,
-              access_token: data.session.access_token,
-              message: "Conta criada com sucesso!"
-            });
-          } else {
-            res.json({
-              user: data.user,
-              session: null,
-              access_token: null,
-              message: "Conta criada! Para desabilitar a confirmação por email, vá em Supabase Dashboard → Authentication → Settings → Enable email confirmations = OFF"
-            });
-          }
-        } catch (error: any) {
-          return res.status(400).json({ message: error.message });
-        }
-      }
-    } catch (error) {
-      console.error("Signup error:", error);
-      res.status(500).json({ message: "Failed to sign up" });
-    }
-  });
-
-  app.post('/api/auth/login', async (req, res) => {
-    try {
-      const { email: usernameOrEmail, password } = req.body;
-
-      if (!supabase) {
-        return res.status(500).json({ message: "Authentication service not configured" });
+      if (!email || !password) {
+        return res.status(400).json({ error: 'Email e senha são obrigatórios' });
       }
 
-      // If it contains @, treat as email; otherwise, treat as username
-      if (usernameOrEmail.includes('@') && !usernameOrEmail.includes('@sosa-local.app')) {
-        // Real email login
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: usernameOrEmail,
-          password,
-        });
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
 
-        if (error) {
-          return res.status(400).json({ message: error.message });
-        }
-
-        res.json({
-          user: data.user,
-          session: data.session,
-          access_token: data.session?.access_token || null
-        });
-      } else {
-        // Username login - convert to email format and login via Supabase
-        const email = usernameOrEmail.includes('@') ? usernameOrEmail : `${usernameOrEmail}@sosa-local.app`;
-        
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-
-        if (error) {
-          if (error.message.includes('Invalid login credentials')) {
-            return res.status(400).json({ message: "Usuário ou senha incorretos" });
-          }
-          return res.status(400).json({ message: error.message });
-        }
-
-        res.json({
-          user: data.user,
-          session: data.session,
-          access_token: data.session?.access_token || null
-        });
+      if (error) {
+        return res.status(401).json({ error: error.message });
       }
+
+      if (!data.user || !data.session) {
+        return res.status(401).json({ error: 'Credenciais inválidas' });
+      }
+
+      // Ensure user exists in our database
+      try {
+        await storage.upsertUser({
+          id: data.user.id,
+          email: data.user.email!,
+          firstName: data.user.user_metadata?.firstName || data.user.email!.split('@')[0],
+          lastName: data.user.user_metadata?.lastName || '',
+          profileImageUrl: data.user.user_metadata?.avatar_url || null,
+        });
+      } catch (dbError) {
+        console.error('Error upserting user:', dbError);
+      }
+
+      res.json({
+        user: {
+          id: data.user.id,
+          email: data.user.email,
+          firstName: data.user.user_metadata?.firstName || data.user.email!.split('@')[0],
+          lastName: data.user.user_metadata?.lastName || '',
+          profileImageUrl: data.user.user_metadata?.avatar_url || null,
+        },
+        access_token: data.session.access_token,
+        refresh_token: data.session.refresh_token,
+      });
     } catch (error) {
       console.error("Login error:", error);
-      res.status(500).json({ message: "Failed to log in" });
+      res.status(500).json({ error: "Erro interno do servidor" });
     }
   });
 
-  app.post('/api/auth/logout', async (req, res) => {
+  // Register endpoint
+  app.post("/api/auth/register", async (req, res) => {
     try {
-      const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        const token = authHeader.split(' ')[1];
-        await supabase.auth.admin.signOut(token);
+      const { email, password, firstName, lastName } = req.body;
+
+      if (!email || !password) {
+        return res.status(400).json({ error: 'Email e senha são obrigatórios' });
       }
-      
-      res.json({ message: "Logged out successfully" });
+
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            firstName: firstName || email.split('@')[0],
+            lastName: lastName || '',
+          }
+        }
+      });
+
+      if (error) {
+        return res.status(400).json({ error: error.message });
+      }
+
+      if (!data.user) {
+        return res.status(400).json({ error: 'Erro ao criar usuário' });
+      }
+
+      // If user is automatically confirmed, create user in database
+      if (data.user.email_confirmed_at) {
+        try {
+          await storage.upsertUser({
+            id: data.user.id,
+            email: data.user.email!,
+            firstName: firstName || data.user.email!.split('@')[0],
+            lastName: lastName || '',
+            profileImageUrl: null,
+          });
+        } catch (dbError) {
+          console.error('Error creating user in database:', dbError);
+        }
+      }
+
+      res.json({
+        message: data.user.email_confirmed_at 
+          ? 'Usuário criado com sucesso' 
+          : 'Verifique seu email para confirmar a conta',
+        user: data.user.email_confirmed_at ? {
+          id: data.user.id,
+          email: data.user.email,
+          firstName: firstName || data.user.email!.split('@')[0],
+          lastName: lastName || '',
+        } : null,
+        access_token: data.session?.access_token,
+        refresh_token: data.session?.refresh_token,
+      });
     } catch (error) {
-      console.error("Logout error:", error);
-      res.json({ message: "Logged out" }); // Always succeed logout
+      console.error("Register error:", error);
+      res.status(500).json({ error: "Erro interno do servidor" });
     }
   });
 
-  app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
+  // Get current user endpoint
+  app.get("/api/auth/user", isAuthenticated, async (req: any, res) => {
     try {
       const user = req.user;
       
-      // Try to get user from database, but fallback to Supabase data if database unavailable
+      // Get user from database or create if doesn't exist
       let dbUser;
       try {
         dbUser = await storage.getUser(user.id);
-      } catch (dbError: any) {
-        console.warn("Database unavailable for user fetch, using Supabase data:", dbError.message);
+        if (!dbUser) {
+          dbUser = await storage.upsertUser({
+            id: user.id,
+            email: user.email!,
+            firstName: user.user_metadata?.firstName || user.email!.split('@')[0],
+            lastName: user.user_metadata?.lastName || '',
+            profileImageUrl: user.user_metadata?.avatar_url || null,
+          });
+        }
+      } catch (dbError) {
+        console.error('Error getting user from database:', dbError);
+        dbUser = {
+          id: user.id,
+          email: user.email,
+          firstName: user.user_metadata?.firstName || user.email!.split('@')[0],
+          lastName: user.user_metadata?.lastName || '',
+          profileImageUrl: user.user_metadata?.avatar_url || null,
+        };
       }
-      
-      res.json({
-        id: user.id,
-        email: user.email,
-        firstName: dbUser?.firstName || user.user_metadata?.username || user.email?.split('@')[0],
-        profileImageUrl: dbUser?.profileImageUrl || user.user_metadata?.avatar_url || null,
-      });
+
+      res.json(dbUser);
     } catch (error) {
-      console.error("Error fetching user:", error);
-      res.status(500).json({ message: "Failed to fetch user" });
+      console.error("Get user error:", error);
+      res.status(500).json({ error: "Erro interno do servidor" });
     }
   });
 
-  // Clear all user data endpoint
-  app.post('/api/auth/clear-all-data', async (req, res) => {
+  // Logout endpoint
+  app.post("/api/auth/logout", async (req, res) => {
     try {
-      clearAllLocalUsers();
-      res.json({ 
-        message: "Todos os dados de usuário foram removidos",
-        clientAction: "clearLocalStorage"
-      });
+      const authorization = req.headers.authorization;
+      
+      if (authorization && authorization.startsWith('Bearer ')) {
+        const token = authorization.split(' ')[1];
+        await supabase.auth.signOut();
+      }
+
+      res.json({ message: "Logout realizado com sucesso" });
     } catch (error) {
-      console.error("Error clearing data:", error);
-      res.status(500).json({ message: "Erro ao limpar dados" });
+      console.error("Logout error:", error);
+      res.json({ message: "Logout realizado com sucesso" });
     }
   });
 }
