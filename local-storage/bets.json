@@ -1,0 +1,45 @@
+[
+  {
+    "id": "bet-12",
+    "userId": "user-ilylorena",
+    "stake": "5",
+    "payout": "55",
+    "profit": "50",
+    "betType": "giros",
+    "status": "completed",
+    "house": "Bet365",
+    "description": null,
+    "placedAt": "2025-08-21T12:00:00.000Z",
+    "createdAt": "2025-08-22T02:38:43.240Z",
+    "updatedAt": "2025-08-22T03:32:07.740Z",
+    "archived": true
+  },
+  {
+    "id": "bet-14",
+    "userId": "user-ilylorena",
+    "stake": "5",
+    "payout": "55",
+    "profit": "50",
+    "betType": "surebet",
+    "status": "completed",
+    "house": "Bet365",
+    "description": null,
+    "placedAt": "2025-08-22T12:00:00.000Z",
+    "createdAt": "2025-08-22T03:24:01.291Z",
+    "updatedAt": "2025-08-22T03:32:05.459Z"
+  },
+  {
+    "id": "bet-15",
+    "userId": "user-ilylorena",
+    "stake": "5",
+    "payout": "54.98",
+    "profit": "49.98",
+    "betType": "surebet",
+    "status": "completed",
+    "house": "Betano",
+    "description": null,
+    "placedAt": "2025-08-22T12:00:00.000Z",
+    "createdAt": "2025-08-22T03:31:16.841Z",
+    "updatedAt": "2025-08-22T03:32:07.061Z"
+  }
+]

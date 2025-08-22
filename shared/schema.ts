@@ -55,7 +55,7 @@ export const betStatusEnum = pgEnum("bet_status", [
 // Bets table
 export const bets = pgTable("bets", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  userId: varchar("userid").notNull().references(() => users.id, { onDelete: "cascade" }),
   stake: decimal("stake", { precision: 12, scale: 2 }).notNull(),
   payout: decimal("payout", { precision: 12, scale: 2 }),
   profit: decimal("profit", { precision: 12, scale: 2 }).generatedAlwaysAs(sql`CASE WHEN payout IS NOT NULL THEN payout - stake ELSE -stake END`),
