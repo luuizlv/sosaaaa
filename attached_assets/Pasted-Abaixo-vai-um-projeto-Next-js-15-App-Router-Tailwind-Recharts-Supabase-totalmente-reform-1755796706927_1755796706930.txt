@@ -1,0 +1,955 @@
+Abaixo vai um projeto **Next.js 15 + App Router + Tailwind + Recharts + Supabase** totalmente reformulado, com **dashboard moderna**, **menu lateral com filtros**, **cards de métricas** (lucro/perda diário + ROI, total de apostas e mais um card configurável), **sincronização por usuário** (PC e celular veem a mesma coisa) usando **Supabase Auth + RLS**.
+
+> **Importante**: Esse setup evita o erro `expected dbUrl, got undefined` porque **não usa** variáveis inventadas; só `SUPABASE_URL` e `SUPABASE_ANON_KEY`. Toda a escrita/leitura é feita via `anon key` com **RLS** garantindo isolamento por usuário.
+
+---
+
+# 1) Estrutura de pastas
+
+```
+meu-dashboard-apostas/
+├─ app/
+│  ├─ layout.tsx
+│  ├─ page.tsx
+│  ├─ globals.css
+│  ├─ (auth)/
+│  │  └─ login/page.tsx
+│  ├─ dashboard/
+│  │  └─ page.tsx
+│  ├─ api/
+│  │  └─ revalidate/route.ts   # opcional, se quiser ISR/SSG+revalidate
+├─ components/
+│  ├─ Sidebar.tsx
+│  ├─ Filters.tsx
+│  ├─ StatsCards.tsx
+│  ├─ ProfitChart.tsx
+│  ├─ AddBetDialog.tsx
+│  └─ Header.tsx
+├─ lib/
+│  ├─ supabaseClient.ts
+│  ├─ types.ts
+│  └─ utils.ts
+├─ public/
+│  └─ logo.svg
+├─ .env.local        # (local) SUPABASE_URL / SUPABASE_ANON_KEY
+├─ package.json
+├─ postcss.config.js
+├─ tailwind.config.ts
+├─ tsconfig.json
+└─ vercel.json
+```
+
+---
+
+# 2) Supabase (SQL) — Tabela + RLS
+
+Crie a tabela e políticas no **SQL Editor** do Supabase:
+
+```sql
+-- Extensão para UUID v4 (se ainda não tiver)
+create extension if not exists "pgcrypto";
+
+-- Tabela principal de apostas
+create table if not exists public.bets (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  stake numeric(14,2) not null check (stake >= 0),
+  payout numeric(14,2) not null check (payout >= 0),
+  profit numeric(14,2) generated always as (payout - stake) stored,
+  house text,
+  tag text,
+  placed_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+-- Habilitar RLS
+alter table public.bets enable row level security;
+
+-- Políticas: cada usuário só enxerga e escreve suas linhas
+create policy "bets_select_own" on public.bets
+  for select using (auth.uid() = user_id);
+
+create policy "bets_insert_own" on public.bets
+  for insert with check (auth.uid() = user_id);
+
+create policy "bets_update_own" on public.bets
+  for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create policy "bets_delete_own" on public.bets
+  for delete using (auth.uid() = user_id);
+```
+
+> **Observação**: como `profit` é coluna gerada, você **não** envia no insert; o banco calcula automaticamente.
+
+---
+
+# 3) Variáveis de ambiente
+
+Crie no **Vercel** e no **Replit** (Secrets):
+
+* `SUPABASE_URL` → Ex.: `https://SEU-PROJETO.supabase.co`
+* `SUPABASE_ANON_KEY` → **anon key** do Supabase
+
+> **Não use** `service_role` no frontend. Se um dia precisar de tarefas administrativas, crie APIs no App Router e use essa key **só no server**.
+
+---
+
+# 4) package.json
+
+```json
+{
+  "name": "meu-dashboard-apostas",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "vercel-build": "next build"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "classnames": "^2.5.1",
+    "lucide-react": "^0.468.0",
+    "next": "^15.5.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.41",
+    "tailwindcss": "^3.4.10",
+    "typescript": "^5.5.4"
+  }
+}
+```
+
+---
+
+# 5) Tailwind config
+
+`tailwind.config.ts`
+
+```ts
+import type { Config } from 'tailwindcss'
+
+export default {
+  content: [
+    './app/**/*.{ts,tsx}',
+    './components/**/*.{ts,tsx}'
+  ],
+  theme: {
+    extend: {
+      colors: {
+        bg: '#0b0d10',
+        card: '#12161b',
+        text: '#e5e7eb',
+        pos: '#16a34a',
+        neg: '#dc2626',
+        accent: '#22d3ee'
+      },
+      borderRadius: {
+        xl: '1rem',
+        '2xl': '1.25rem'
+      }
+    }
+  },
+  plugins: []
+} satisfies Config
+```
+
+`postcss.config.js`
+
+```js
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+```
+
+`app/globals.css`
+
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+html, body { height: 100%; }
+body { background: theme(colors.bg); color: theme(colors.text); }
+
+/* Scrollbar discreta */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: #0f1317; }
+*::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 12px; }
+```
+
+---
+
+# 6) Supabase client
+
+`lib/supabaseClient.ts`
+
+```ts
+'use client'
+import { createClient } from '@supabase/supabase-js'
+
+export const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL ?? (process.env.SUPABASE_URL as string),
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? (process.env.SUPABASE_ANON_KEY as string)
+)
+```
+
+> **Dica**: se preferir usar o prefixo `NEXT_PUBLIC_` no Vercel, troque os nomes no painel e aqui.
+
+`lib/types.ts`
+
+```ts
+export type Bet = {
+  id: string
+  user_id: string
+  stake: number
+  payout: number
+  profit: number
+  house?: string | null
+  tag?: string | null
+  placed_at: string
+  created_at: string
+}
+
+export type Range = 'daily' | 'monthly' | 'yearly'
+```
+
+`lib/utils.ts`
+
+```ts
+import type { Bet } from './types'
+
+export function calcROI(stakeSum: number, profitSum: number) {
+  if (stakeSum <= 0) return 0
+  return (profitSum / stakeSum) * 100
+}
+
+export function groupByDate(bets: Bet[], range: 'daily'|'monthly'|'yearly') {
+  const fmt = new Intl.DateTimeFormat('pt-BR',
+    range === 'daily' ? { year: 'numeric', month: '2-digit', day: '2-digit' }
+    : range === 'monthly' ? { year: 'numeric', month: '2-digit' }
+    : { year: 'numeric' }
+  )
+  const map = new Map<string, { stake: number; payout: number; profit: number }>()
+  for (const b of bets) {
+    const key = fmt.format(new Date(b.placed_at))
+    const x = map.get(key) ?? { stake: 0, payout: 0, profit: 0 }
+    x.stake += Number(b.stake)
+    x.payout += Number(b.payout)
+    x.profit += Number(b.profit)
+    map.set(key, x)
+  }
+  return Array.from(map, ([date, v]) => ({ date, ...v }))
+}
+```
+
+---
+
+# 7) Layout base + Header
+
+`app/layout.tsx`
+
+```tsx
+import './globals.css'
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  title: 'Apostas • Dashboard',
+  description: 'Gerencie apostas com sincronização por usuário (Supabase)',
+}
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="pt-BR">
+      <body className="min-h-dvh antialiased">
+        {children}
+      </body>
+    </html>
+  )
+}
+```
+
+`components/Header.tsx`
+
+```tsx
+'use client'
+import { useEffect, useState } from 'react'
+import { supabase } from '@/lib/supabaseClient'
+import { LogIn, LogOut } from 'lucide-react'
+
+export default function Header() {
+  const [email, setEmail] = useState<string>('')
+  const [userEmail, setUserEmail] = useState<string | null>(null)
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      setUserEmail(data.user?.email ?? null)
+    })
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      setUserEmail(session?.user?.email ?? null)
+    })
+    return () => { sub.subscription.unsubscribe() }
+  }, [])
+
+  async function signIn(e: React.FormEvent) {
+    e.preventDefault()
+    if (!email) return
+    await supabase.auth.signInWithOtp({ email })
+    alert('Enviamos um link de login para seu email.')
+  }
+
+  async function signOut() { await supabase.auth.signOut() }
+
+  return (
+    <header className="sticky top-0 z-20 border-b border-white/5 bg-bg/80 backdrop-blur">
+      <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4">
+        <div className="text-lg font-semibold tracking-tight">Apostas • Dashboard</div>
+        <div className="flex items-center gap-3">
+          {userEmail ? (
+            <>
+              <span className="text-sm text-white/70 hidden sm:inline">{userEmail}</span>
+              <button onClick={signOut} className="rounded-xl bg-card px-3 py-2 text-sm hover:bg-white/10 flex items-center gap-2"><LogOut size={16}/> Sair</button>
+            </>
+          ) : (
+            <form onSubmit={signIn} className="flex items-center gap-2">
+              <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="seu@email.com" className="rounded-xl bg-card px-3 py-2 text-sm outline-none border border-white/10 focus:border-accent/60"/>
+              <button className="rounded-xl bg-accent/20 px-3 py-2 text-sm hover:bg-accent/30 flex items-center gap-2"><LogIn size={16}/> Entrar</button>
+            </form>
+          )}
+        </div>
+      </div>
+    </header>
+  )
+}
+```
+
+---
+
+# 8) Sidebar (menu com filtros)
+
+`components/Sidebar.tsx`
+
+```tsx
+'use client'
+import { BarChart3, Settings2, PlusCircle, Home } from 'lucide-react'
+import clsx from 'classnames'
+
+export default function Sidebar({
+  open,
+  onToggle,
+  children,
+}: {
+  open: boolean
+  onToggle: () => void
+  children?: React.ReactNode
+}) {
+  return (
+    <aside className={clsx('fixed inset-y-0 left-0 z-10 w-72 transform bg-card/70 backdrop-blur border-r border-white/5 transition-transform', {
+      '-translate-x-full': !open,
+      'translate-x-0': open,
+    })}>
+      <div className="p-4 flex items-center justify-between">
+        <div className="font-semibold">Menu</div>
+        <button onClick={onToggle} className="text-white/70">✕</button>
+      </div>
+      <nav className="px-2 space-y-1">
+        <a className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-white/5" href="/dashboard"><Home size={18}/> Dashboard</a>
+        <a className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-white/5" href="#add"><PlusCircle size={18}/> Nova aposta</a>
+        <a className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-white/5" href="#filtros"><Settings2 size={18}/> Filtros</a>
+        <a className="flex items-center gap-2 rounded-xl px-3 py-2 hover:bg-white/5" href="#charts"><BarChart3 size={18}/> Gráficos</a>
+      </nav>
+      <div className="p-4">{children}</div>
+    </aside>
+  )
+}
+```
+
+`components/Filters.tsx`
+
+```tsx
+'use client'
+import type { Range } from '@/lib/types'
+
+export default function Filters({ range, setRange }: { range: Range; setRange: (r: Range)=>void }) {
+  return (
+    <div id="filtros" className="flex flex-wrap gap-2">
+      {(['daily','monthly','yearly'] as Range[]).map(r => (
+        <button key={r} onClick={()=>setRange(r)}
+          className={`rounded-xl px-3 py-2 text-sm border border-white/10 ${range===r? 'bg-accent/20 border-accent/40' : 'bg-card hover:bg-white/5'}`}>{r==='daily'?'Diário':r==='monthly'?'Mensal':'Anual'}</button>
+      ))}
+    </div>
+  )
+}
+```
+
+---
+
+# 9) Cards de métricas (lucro/perda + ROI, total de apostas, card extra)
+
+`components/StatsCards.tsx`
+
+```tsx
+'use client'
+import { calcROI } from '@/lib/utils'
+
+export default function StatsCards({
+  stakeSum,
+  payoutSum,
+  profitSum,
+  betCount,
+}: {
+  stakeSum: number
+  payoutSum: number
+  profitSum: number
+  betCount: number
+}) {
+  const roi = calcROI(stakeSum, profitSum)
+  return (
+    <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="rounded-2xl bg-card p-4 border border-white/5">
+        <div className="text-sm text-white/60">Lucro / Perda</div>
+        <div className={`mt-2 text-3xl font-semibold ${profitSum>=0? 'text-pos':'text-neg'}`}>{profitSum>=0? '+':''}{profitSum.toFixed(2)}</div>
+        <div className="mt-2 text-xs text-white/60">ROI: {roi.toFixed(2)}%</div>
+      </div>
+
+      <div className="rounded-2xl bg-card p-4 border border-white/5">
+        <div className="text-sm text-white/60">Total de Apostas</div>
+        <div className="mt-2 text-3xl font-semibold">{betCount}</div>
+        <div className="mt-2 text-xs text-white/60">Apostas registradas no período</div>
+      </div>
+
+      <div className="rounded-2xl bg-card p-4 border border-white/5">
+        <div className="text-sm text-white/60">Resumo Financeiro</div>
+        <div className="mt-2 text-xl">Apostado: {stakeSum.toFixed(2)}</div>
+        <div className="text-xl">Retorno: {payoutSum.toFixed(2)}</div>
+      </div>
+    </section>
+  )
+}
+```
+
+---
+
+# 10) Gráfico (muda com filtro diário/mensal/anual)
+
+`components/ProfitChart.tsx`
+
+```tsx
+'use client'
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
+
+export default function ProfitChart({ data }: { data: { date: string; profit: number }[] }) {
+  return (
+    <div id="charts" className="h-64 w-full rounded-2xl bg-card border border-white/5 p-2">
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+          <defs>
+            <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.6}/>
+              <stop offset="95%" stopColor="#22d3ee" stopOpacity={0.05}/>
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeOpacity={0.1} vertical={false} />
+          <XAxis dataKey="date" tick={{ fill: '#9ca3af' }} tickLine={false} axisLine={false} />
+          <YAxis tick={{ fill: '#9ca3af' }} tickLine={false} axisLine={false} />
+          <Tooltip contentStyle={{ background: '#0b0d10', border: '1px solid #1f2937' }} />
+          <Area type="monotone" dataKey="profit" stroke="#22d3ee" fill="url(#g)" />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+```
+
+---
+
+# 11) Form de nova aposta (dialog simples)
+
+`components/AddBetDialog.tsx`
+
+```tsx
+'use client'
+import { useState } from 'react'
+import { supabase } from '@/lib/supabaseClient'
+
+export default function AddBetDialog({ onAdded }: { onAdded: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [stake, setStake] = useState('')
+  const [payout, setPayout] = useState('')
+  const [house, setHouse] = useState('')
+  const [tag, setTag] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function addBet() {
+    const s = Number(stake)
+    const p = Number(payout)
+    if (isNaN(s) || isNaN(p)) return alert('Valores inválidos')
+
+    const { data: u } = await supabase.auth.getUser()
+    if (!u.user) return alert('Faça login para adicionar uma aposta')
+
+    setLoading(true)
+    const { error } = await supabase.from('bets').insert({
+      user_id: u.user.id,
+      stake: s,
+      payout: p,
+      house: house || null,
+      tag: tag || null,
+      placed_at: new Date().toISOString(),
+    })
+    setLoading(false)
+
+    if (error) {
+      console.error(error)
+      alert('Erro ao salvar')
+    } else {
+      setOpen(false)
+      setStake(''); setPayout(''); setHouse(''); setTag('')
+      onAdded()
+    }
+  }
+
+  return (
+    <div id="add">
+      <button onClick={()=>setOpen(true)} className="rounded-xl bg-accent/20 px-4 py-2 text-sm hover:bg-accent/30">+ Nova aposta</button>
+      {open && (
+        <div className="fixed inset-0 z-40 grid place-items-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-card p-4 border border-white/10">
+            <div className="text-lg font-semibold mb-3">Adicionar aposta</div>
+            <div className="space-y-3">
+              <input value={stake} onChange={e=>setStake(e.target.value)} placeholder="Valor apostado" className="w-full rounded-xl bg-bg px-3 py-2 border border-white/10"/>
+              <input value={payout} onChange={e=>setPayout(e.target.value)} placeholder="Retorno (payout)" className="w-full rounded-xl bg-bg px-3 py-2 border border-white/10"/>
+              <input value={house} onChange={e=>setHouse(e.target.value)} placeholder="Casa (opcional)" className="w-full rounded-xl bg-bg px-3 py-2 border border-white/10"/>
+              <input value={tag} onChange={e=>setTag(e.target.value)} placeholder="Tag (opcional)" className="w-full rounded-xl bg-bg px-3 py-2 border border-white/10"/>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={()=>setOpen(false)} className="rounded-xl px-3 py-2 text-sm border border-white/10">Cancelar</button>
+              <button disabled={loading} onClick={addBet} className="rounded-xl bg-accent/20 px-4 py-2 text-sm hover:bg-accent/30">{loading? 'Salvando...':'Salvar'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+```
+
+---
+
+# 12) Página principal (Dashboard)
+
+`app/page.tsx` (redireciona para /dashboard)
+
+```tsx
+import { redirect } from 'next/navigation'
+
+export default function Page() {
+  redirect('/dashboard')
+}
+```
+
+`app/dashboard/page.tsx`
+
+```tsx
+'use client'
+import { useEffect, useMemo, useState } from 'react'
+import Header from '@/components/Header'
+import Sidebar from '@/components/Sidebar'
+import Filters from '@/components/Filters'
+import StatsCards from '@/components/StatsCards'
+import ProfitChart from '@/components/ProfitChart'
+import AddBetDialog from '@/components/AddBetDialog'
+import { supabase } from '@/lib/supabaseClient'
+import type { Bet, Range } from '@/lib/types'
+import { groupByDate } from '@/lib/utils'
+import { Menu } from 'lucide-react'
+
+export default function DashboardPage() {
+  const [open, setOpen] = useState(false)
+  const [bets, setBets] = useState<Bet[]>([])
+  const [range, setRange] = useState<Range>('daily')
+
+  async function load() {
+    const { data: user } = await supabase.auth.getUser()
+    if (!user.user) return
+    const { data, error } = await supabase
+      .from('bets')
+      .select('*')
+      .order('placed_at', { ascending: true })
+    if (!error && data) setBets(data as Bet[])
+  }
+
+  useEffect(() => {
+    load()
+    const channel = supabase
+      .channel('realtime-bets')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bets' }, load)
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [])
+
+  const stakeSum = useMemo(() => bets.reduce((a,b)=> a + Number(b.stake), 0), [bets])
+  const payoutSum = useMemo(() => bets.reduce((a,b)=> a + Number(b.payout), 0), [bets])
+  const profitSum = useMemo(() => bets.reduce((a,b)=> a + Number(b.profit), 0), [bets])
+
+  const chartData = useMemo(() => {
+    const g = groupByDate(bets, range)
+    return g.map(({ date, profit }) => ({ date, profit }))
+  }, [bets, range])
+
+  return (
+    <div className="min-h-dvh">
+      <Header />
+      <div className="mx-auto grid max-w-7xl grid-cols-1 lg:grid-cols-[18rem_1fr] gap-4 p-4">
+        <Sidebar open={open} onToggle={()=>setOpen(!open)} />
+        <main className="lg:pl-72">
+          <div className="mb-4 flex items-center justify-between">
+            <button onClick={()=>setOpen(!open)} className="rounded-xl bg-card px-3 py-2 border border-white/10 lg:hidden"><Menu size={18}/></button>
+            <AddBetDialog onAdded={load} />
+          </div>
+
+          <div className="mb-4"><Filters range={range} setRange={setRange} /></div>
+          <div className="mb-4"><StatsCards stakeSum={stakeSum} payoutSum={payoutSum} profitSum={profitSum} betCount={bets.length} /></div>
+          <ProfitChart data={chartData} />
+
+          {/* Lista simples (opcional) */}
+          <section className="mt-6 rounded-2xl bg-card border border-white/5">
+            <div className="px-4 py-3 text-sm text-white/70">Histórico recente</div>
+            <div className="divide-y divide-white/5">
+              {bets.slice(-10).reverse().map(b => (
+                <div key={b.id} className="grid grid-cols-5 gap-2 px-4 py-3 text-sm">
+                  <div className="col-span-2 truncate">{new Date(b.placed_at).toLocaleString('pt-BR')}</div>
+                  <div>Apostado: {Number(b.stake).toFixed(2)}</div>
+                  <div>Retorno: {Number(b.payout).toFixed(2)}</div>
+                  <div className={Number(b.profit)>=0? 'text-pos':'text-neg'}>{Number(b.profit)>=0? '+':''}{Number(b.profit).toFixed(2)}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+  )
+}
+```
+
+---
+
+# 13) Página de login (rota separada)
+
+`app/(auth)/login/page.tsx`
+
+```tsx
+'use client'
+import Header from '@/components/Header'
+
+export default function LoginPage() {
+  return (
+    <div>
+      <Header />
+      <div className="mx-auto max-w-lg p-6">
+        <p className="text-white/70">Use o campo de email no topo para receber o link mágico de login (Supabase Auth).</p>
+      </div>
+    </div>
+  )
+}
+```
+
+---
+
+# 14) vercel.json (simples e compatível)
+
+`vercel.json`
+
+```json
+{
+  "version": 2,
+  "builds": [
+    { "src": "package.json", "use": "@vercel/next" }
+  ]
+}
+```
+
+> Se preferir, pode até **remover** o `vercel.json` porque o Vercel detecta Next.js automaticamente.
+
+---
+
+# 15) tsconfig.json (mínimo)
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "es2022"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "baseUrl": ".",
+    "paths": { "@/*": ["./*"] }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}
+```
+
+---
+
+# 16) Como rodar
+
+```bash
+# 1) Instalar dependências
+npm install
+
+# 2) Criar .env.local (local) ou Secrets no Replit
+# .env.local
+SUPABASE_URL=https://SEU-PROJETO.supabase.co
+SUPABASE_ANON_KEY=ey...
+
+# 3) Rodar
+npm run dev
+```
+
+Abra `http://localhost:3000` (ou a URL do Replit). Faça login via email (link mágico), adicione uma aposta e veja **cards + gráfico** mudando conforme **filtro Diário/Mensal/Anual**.
+
+---
+
+# 17) Deploy no Vercel
+
+1. Suba para o GitHub.
+2. Importar no Vercel.
+3. Em **Settings → Environment Variables**, adicione:
+
+   * `SUPABASE_URL`
+   * `SUPABASE_ANON_KEY`
+4. Deploy.
+
+> Tudo sincroniza por usuário (RLS). O mesmo login no **celular** e no **PC** verá o **mesmo histórico**.
+
+---
+
+# 18) Extensões sugeridas (futuro)
+
+* **Casas de aposta**: guardar `house` como enum ou tabela relacionada.
+* **Tags / mercados**: filtros por `tag` e busca.
+* **Exportar CSV**: gerar relatório por período.
+* **KPIs extras**: taxa de acerto, odd média, desvio padrão do lucro.
+* **IA (grátis)**: heurísticas locais (sem API paga) para alerta de risco e bankroll (Kelly parcial).
+
+---
+
+Pronto — base moderna, rápida, tema dark OLED, UX clean e **sem dor de cabeça com env**. É só colar os arquivos nas pastas indicadas, configurar `SUPABASE_URL` e `SUPABASE_ANON_KEY`, criar a tabela com as políticas e publicar.
+
+**components/ui/button.tsx**
+
+```tsx
+import * as React from 'react'
+import { Slot } from '@radix-ui/react-slot'
+import { cva, type VariantProps } from 'class-variance-authority'
+import { cn } from '@/lib/utils'
+
+const buttonVariants = cva(
+  'inline-flex items-center justify-center whitespace-nowrap rounded-xl text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:opacity-50 disabled:pointer-events-none border border-white/10',
+  {
+    variants: {
+      variant: {
+        default: 'bg-accent/20 text-white hover:bg-accent/30',
+        secondary: 'bg-card text-white hover:bg-white/10',
+        outline: 'bg-transparent hover:bg-white/5 border-white/20',
+        ghost: 'bg-transparent hover:bg-white/5 border-transparent'
+      },
+      size: {
+        default: 'h-9 px-4 py-2',
+        sm: 'h-8 px-3',
+        lg: 'h-10 px-6',
+        icon: 'h-9 w-9 p-0'
+      }
+    },
+    defaultVariants: { variant: 'default', size: 'default' }
+  }
+)
+
+export interface ButtonProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+    VariantProps<typeof buttonVariants> {
+  asChild?: boolean
+}
+
+const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, variant, size, asChild = false, ...props }, ref) => {
+    const Comp = asChild ? Slot : 'button'
+    return (
+      <Comp className={cn(buttonVariants({ variant, size, className }))} ref={ref} {...props} />
+    )
+  }
+)
+Button.displayName = 'Button'
+
+export { Button, buttonVariants }
+```
+
+**components/ui/card.tsx**
+
+```tsx
+import * as React from 'react'
+import { cn } from '@/lib/utils'
+
+function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn('rounded-2xl border border-white/5 bg-card p-4', className)} {...props} />
+}
+function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn('mb-2', className)} {...props} />
+}
+function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
+  return <h3 className={cn('text-base font-semibold', className)} {...props} />
+}
+function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn('text-sm', className)} {...props} />
+}
+
+export { Card, CardHeader, CardTitle, CardContent }
+```
+
+**components/ui/input.tsx**
+
+```tsx
+import * as React from 'react'
+import { cn } from '@/lib/utils'
+
+export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {}
+
+const Input = React.forwardRef<HTMLInputElement, InputProps>(({ className, ...props }, ref) => {
+  return (
+    <input
+      ref={ref}
+      className={cn(
+        'flex h-10 w-full rounded-xl border border-white/10 bg-card px-3 py-2 text-sm outline-none ring-accent/40 placeholder:text-white/40 focus:border-accent/60',
+        className
+      )}
+      {...props}
+    />
+  )
+})
+Input.displayName = 'Input'
+
+export { Input }
+```
+
+**components/ui/dialog.tsx**
+
+```tsx
+'use client'
+import * as React from 'react'
+import * as DialogPrimitive from '@radix-ui/react-dialog'
+import { cn } from '@/lib/utils'
+
+const Dialog = DialogPrimitive.Root
+const DialogTrigger = DialogPrimitive.Trigger
+const DialogPortal = DialogPrimitive.Portal
+const DialogClose = DialogPrimitive.Close
+
+function DialogOverlay({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
+  return (
+    <DialogPrimitive.Overlay
+      className={cn('fixed inset-0 bg-black/60 backdrop-blur-sm', className)}
+      {...props}
+    />
+  )
+}
+
+function DialogContent({ className, children, ...props }: React.ComponentProps<typeof DialogPrimitive.Content>) {
+  return (
+    <DialogPortal>
+      <DialogOverlay />
+      <DialogPrimitive.Content
+        className={cn(
+          'fixed left-1/2 top-1/2 w-[92vw] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-white/10 bg-bg p-4 shadow-xl',
+          className
+        )}
+        {...props}
+      >
+        {children}
+      </DialogPrimitive.Content>
+    </DialogPortal>
+  )
+}
+
+function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn('mb-2', className)} {...props} />
+}
+function DialogTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
+  return <h3 className={cn('text-lg font-semibold', className)} {...props} />
+}
+
+export { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogClose }
+```
+
+---
+
+## 8) Variáveis de ambiente (.env.local)
+
+Crie um arquivo **.env.local** na raiz (não comitar):
+
+```
+NEXT_PUBLIC_SUPABASE_URL=https://SEU-PROJETO.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=SEU_ANON_KEY
+```
+
+> Em produção (Vercel/Replit), cadastre as mesmas chaves nas **Environment Variables**.
+
+---
+
+## 9) Passo a passo (local)
+
+```bash
+# 1) Instalar
+npm i
+
+# 2) Rodar em dev
+npm run dev
+# app em http://localhost:3000
+
+# 3) (Opcional) Tipar e checar
+npm run build
+```
+
+---
+
+## 10) Deploy (Vercel)
+
+1. Suba o repositório no GitHub.
+2. No Vercel, **Import Project** → selecione o repo.
+3. Em **Environment Variables**, adicione:
+
+   * `NEXT_PUBLIC_SUPABASE_URL`
+   * `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+4. Build Command: `next build` (já padrão). Output: `.next`.
+5. Deploy.
+
+> Se usar **Replit Deploys**: defina o Run Command como `npm run start` após `npm run build`, e cadastre as variáveis de ambiente no projeto.
+
+---
+
+## 11) Observações importantes
+
+* O **RLS** garante que cada usuário só vê as **próprias apostas** (sincroniza celular/PC automaticamente).
+* O **auth** usa **Magic Link** (e-mail) do Supabase, mantendo tudo simples e sem senha.
+* O gráfico e os cards reagem aos **filtros** (diário/mensal/anual) e o ROI aparece dentro do card de Lucro/Perda.
+* O listener de **realtime** atualiza o dashboard sempre que você adiciona/edita/deleta uma aposta em outro dispositivo.
+
+Pronto! Copie os arquivos, configure o Supabase com o SQL e rode. Se quiser, eu já te gero um **ZIP** com essa estrutura ou crio um **repo GitHub** com tudo isso. Basta dizer!
