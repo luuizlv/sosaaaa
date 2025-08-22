@@ -1,0 +1,75 @@
+2025-08-22T18:40:52.433801985Z 6:40:52 PM [express] GET /api/auth/user 304 in 1778ms :: {"id":"f79c9eb4-ff68-4d80-a3d3-302349416894…
+2025-08-22T18:40:53.238202022Z Error fetching available years: error: column "updated_at" does not exist
+2025-08-22T18:40:53.238219582Z     at /opt/render/project/src/node_modules/pg-pool/index.js:45:11
+2025-08-22T18:40:53.238225012Z     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+2025-08-22T18:40:53.238230233Z     at async file:///opt/render/project/src/node_modules/drizzle-orm/node-postgres/session.js:83:22
+2025-08-22T18:40:53.238237583Z     at async file:///opt/render/project/src/dist/index.js:467:21 {
+2025-08-22T18:40:53.238241453Z   length: 172,
+2025-08-22T18:40:53.238246053Z   severity: 'ERROR',
+2025-08-22T18:40:53.238250123Z   code: '42703',
+2025-08-22T18:40:53.238253953Z   detail: undefined,
+2025-08-22T18:40:53.238258113Z   hint: 'Perhaps you meant to reference the column "bets.updatedat".',
+2025-08-22T18:40:53.238262424Z   position: '126',
+2025-08-22T18:40:53.238266824Z   internalPosition: undefined,
+2025-08-22T18:40:53.238271044Z   internalQuery: undefined,
+2025-08-22T18:40:53.238275164Z   where: undefined,
+2025-08-22T18:40:53.238278904Z   schema: undefined,
+2025-08-22T18:40:53.238283104Z   table: undefined,
+2025-08-22T18:40:53.238287124Z   column: undefined,
+2025-08-22T18:40:53.238291424Z   dataType: undefined,
+2025-08-22T18:40:53.238295205Z   constraint: undefined,
+2025-08-22T18:40:53.238299185Z   file: 'parse_relation.c',
+2025-08-22T18:40:53.238303375Z   line: '3723',
+2025-08-22T18:40:53.238307205Z   routine: 'errorMissingColumn'
+2025-08-22T18:40:53.238311045Z }
+2025-08-22T18:40:53.239319554Z 6:40:53 PM [express] GET /api/bets/years 500 in 586ms :: {"error":"Internal server error"}
+2025-08-22T18:40:53.93130028Z Error fetching bets: error: column "updated_at" does not exist
+2025-08-22T18:40:53.931320751Z     at /opt/render/project/src/node_modules/pg-pool/index.js:45:11
+2025-08-22T18:40:53.931326021Z     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+2025-08-22T18:40:53.931330641Z     at async file:///opt/render/project/src/node_modules/drizzle-orm/node-postgres/session.js:83:22
+2025-08-22T18:40:53.931346882Z     at async file:///opt/render/project/src/dist/index.js:440:21 {
+2025-08-22T18:40:53.931351432Z   length: 172,
+2025-08-22T18:40:53.931356092Z   severity: 'ERROR',
+2025-08-22T18:40:53.931360072Z   code: '42703',
+2025-08-22T18:40:53.931364162Z   detail: undefined,
+2025-08-22T18:40:53.931368453Z   hint: 'Perhaps you meant to reference the column "bets.updatedat".',
+2025-08-22T18:40:53.931372653Z   position: '126',
+2025-08-22T18:40:53.931376953Z   internalPosition: undefined,
+2025-08-22T18:40:53.931380883Z   internalQuery: undefined,
+2025-08-22T18:40:53.931384703Z   where: undefined,
+2025-08-22T18:40:53.931388823Z   schema: undefined,
+2025-08-22T18:40:53.931404163Z   table: undefined,
+2025-08-22T18:40:53.931406823Z   column: undefined,
+2025-08-22T18:40:53.931419794Z   dataType: undefined,
+2025-08-22T18:40:53.931422364Z   constraint: undefined,
+2025-08-22T18:40:53.931424954Z   file: 'parse_relation.c',
+2025-08-22T18:40:53.931427724Z   line: '3723',
+2025-08-22T18:40:53.931430044Z   routine: 'errorMissingColumn'
+2025-08-22T18:40:53.931432494Z }
+2025-08-22T18:40:53.93234863Z 6:40:53 PM [express] GET /api/bets 500 in 1267ms :: {"error":"Internal server error"}
+2025-08-22T18:40:53.973595415Z Error fetching available months: error: column "updated_at" does not exist
+2025-08-22T18:40:53.973612905Z     at /opt/render/project/src/node_modules/pg-pool/index.js:45:11
+2025-08-22T18:40:53.973616785Z     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+2025-08-22T18:40:53.973620105Z     at async file:///opt/render/project/src/node_modules/drizzle-orm/node-postgres/session.js:83:22
+2025-08-22T18:40:53.973622585Z     at async file:///opt/render/project/src/dist/index.js:450:21 {
+2025-08-22T18:40:53.973625175Z   length: 172,
+2025-08-22T18:40:53.973628365Z   severity: 'ERROR',
+2025-08-22T18:40:53.973631105Z   code: '42703',
+2025-08-22T18:40:53.973634056Z   detail: undefined,
+2025-08-22T18:40:53.973636556Z   hint: 'Perhaps you meant to reference the column "bets.updatedat".',
+2025-08-22T18:40:53.973639226Z   position: '126',
+2025-08-22T18:40:53.973642476Z   internalPosition: undefined,
+2025-08-22T18:40:53.973644946Z   internalQuery: undefined,
+2025-08-22T18:40:53.973647686Z   where: undefined,
+2025-08-22T18:40:53.973650746Z   schema: undefined,
+2025-08-22T18:40:53.973653536Z   table: undefined,
+2025-08-22T18:40:53.973656326Z   column: undefined,
+2025-08-22T18:40:53.973658986Z   dataType: undefined,
+2025-08-22T18:40:53.973661736Z   constraint: undefined,
+2025-08-22T18:40:53.973664486Z   file: 'parse_relation.c',
+2025-08-22T18:40:53.973667986Z   line: '3723',
+2025-08-22T18:40:53.973670797Z   routine: 'errorMissingColumn'
+2025-08-22T18:40:53.973673437Z }
+2025-08-22T18:40:53.974358886Z 6:40:53 PM [express] GET /api/bets/months 500 in 1319ms :: {"error":"Internal server error"}
+2025-08-22T18:40:54.053354145Z 6:40:54 PM [express] GET /api/bets/stats 304 in 1393ms :: {"totalStake":"0","totalPayout":"0","total…
+2025-08-22T18:40:54.08129435Z 6:40:54 PM [express] GET /api/bets/stats 304 in 1418ms :: {"totalStake":"0","totalPayout":"0","total…
